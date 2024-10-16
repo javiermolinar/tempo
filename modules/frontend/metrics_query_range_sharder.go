@@ -84,6 +84,11 @@ func (s queryRangeSharder) RoundTrip(pipelineRequest pipeline.Request) (pipeline
 
 	traceql.AlignRequest(req)
 
+	if req.Exemplars > 0 && req.Exemplars > uint32(s.cfg.MaxExemplars) {
+		// Enforce the limit of exemplars
+		req.Exemplars = uint32(s.cfg.MaxExemplars)
+	}
+
 	// calculate and enforce max search duration
 	// Note: this is checked after alignment for consistency.
 	maxDuration := s.maxDuration(tenantID)
@@ -150,11 +155,11 @@ func (s *queryRangeSharder) blockMetas(start, end int64, tenantID string) []*bac
 	return metas
 }
 
-func (s *queryRangeSharder) exemplarsPerShard(total uint32) uint32 {
-	if !s.cfg.Exemplars {
+func (s *queryRangeSharder) exemplarsPerShard(total uint32, maxExemplars uint32) uint32 {
+	if maxExemplars <= 0 {
 		return 0
 	}
-	return uint32(math.Ceil(float64(s.cfg.MaxExemplars)*1.2)) / total
+	return uint32(math.Ceil(float64(maxExemplars)*1.2)) / total
 }
 
 func (s *queryRangeSharder) backendRequests(ctx context.Context, tenantID string, parent pipeline.Request, searchReq tempopb.QueryRangeRequest, cutoff time.Time, targetBytesPerRequest int, reqCh chan pipeline.Request) (totalJobs, totalBlocks uint32, totalBlockBytes uint64) {
@@ -209,7 +214,7 @@ func (s *queryRangeSharder) buildBackendRequests(ctx context.Context, tenantID s
 	queryHash := hashForQueryRangeRequest(&searchReq)
 	colsToJSON := api.NewDedicatedColumnsToJSON()
 
-	exemplarsPerBlock := s.exemplarsPerShard(uint32(len(metas)))
+	exemplarsPerBlock := s.exemplarsPerShard(uint32(len(metas)), searchReq.Exemplars)
 	for _, m := range metas {
 		if m.EndTime.Before(m.StartTime) {
 			// Ignore blocks with bad timings from debugging
@@ -299,7 +304,6 @@ func (s *queryRangeSharder) generatorRequest(ctx context.Context, tenantID strin
 	}
 
 	searchReq.QueryMode = querier.QueryModeRecent
-	searchReq.Exemplars = uint32(s.cfg.MaxExemplars) // TODO: Review this
 
 	subR := parent.HTTPRequest().Clone(ctx)
 	subR = api.BuildQueryRangeRequest(subR, &searchReq, "") // dedicated cols are never passed to the generators

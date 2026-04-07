@@ -1,6 +1,10 @@
 package overrides
 
 import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"sync"
 	"time"
 
 	"github.com/grafana/tempo/modules/overrides/histograms"
@@ -76,6 +80,7 @@ func (c *Overrides) toLegacy() LegacyOverrides {
 		MaxMetricsDuration:         c.Read.MaxMetricsDuration,
 		UnsafeQueryHints:           c.Read.UnsafeQueryHints,
 		LeftPadTraceIDs:            c.Read.LeftPadTraceIDs,
+		MetricsSpanOnlyFetch:       c.Read.MetricsSpanOnlyFetch,
 
 		MaxBytesPerTrace: c.Global.MaxBytesPerTrace,
 
@@ -84,6 +89,7 @@ func (c *Overrides) toLegacy() LegacyOverrides {
 			Dimensions:     c.CostAttribution.Dimensions,
 			MaxCardinality: c.CostAttribution.MaxCardinality,
 		},
+		Extensions: maps.Clone(c.Extensions), // Copy extensions to avoid modifying the original
 	}
 }
 
@@ -156,10 +162,11 @@ type LegacyOverrides struct {
 	MaxBlocksPerTagValuesQuery int `yaml:"max_blocks_per_tag_values_query" json:"max_blocks_per_tag_values_query"`
 
 	// QueryFrontend enforced limits
-	MaxSearchDuration  model.Duration `yaml:"max_search_duration" json:"max_search_duration"`
-	MaxMetricsDuration model.Duration `yaml:"max_metrics_duration" json:"max_metrics_duration"`
-	UnsafeQueryHints   bool           `yaml:"unsafe_query_hints" json:"unsafe_query_hints"`
-	LeftPadTraceIDs    bool           `yaml:"left_pad_trace_ids" json:"left_pad_trace_ids"`
+	MaxSearchDuration    model.Duration `yaml:"max_search_duration" json:"max_search_duration"`
+	MaxMetricsDuration   model.Duration `yaml:"max_metrics_duration" json:"max_metrics_duration"`
+	UnsafeQueryHints     bool           `yaml:"unsafe_query_hints" json:"unsafe_query_hints"`
+	LeftPadTraceIDs      bool           `yaml:"left_pad_trace_ids" json:"left_pad_trace_ids"`
+	MetricsSpanOnlyFetch *bool          `yaml:"metrics_spanonly_fetch,omitempty" json:"metrics_spanonly_fetch,omitempty"`
 
 	// MaxBytesPerTrace is enforced in the Ingester, Compactor, Querier (Search). It
 	//  is not used when doing a trace by id lookup.
@@ -169,10 +176,132 @@ type LegacyOverrides struct {
 
 	// tempodb limits
 	DedicatedColumns backend.DedicatedColumns `yaml:"parquet_dedicated_columns" json:"parquet_dedicated_columns"`
+
+	// Extensions mirrors Overrides.Extensions: typed instances keyed by nested Key() after unmarshal.
+	Extensions map[string]any `yaml:",inline" json:"-"`
 }
 
-func (l *LegacyOverrides) toNewLimits() Overrides {
-	return Overrides{
+// knownLegacyOverridesJSONFields returns the JSON key names declared on LegacyOverrides
+var knownLegacyOverridesJSONFields = sync.OnceValue(func() map[string]struct{} {
+	return fieldNamesFor(LegacyOverrides{}, "json")
+})
+
+// knownLegacyOverridesYAMLFields returns the YAML key names declared on LegacyOverrides.
+var knownLegacyOverridesYAMLFields = sync.OnceValue(func() map[string]struct{} {
+	return fieldNamesFor(LegacyOverrides{}, "yaml")
+})
+
+// isKnownLegacyOverridesField reports whether key matches any YAML or JSON field
+func isKnownLegacyOverridesField(key string) bool {
+	_, inJSON := knownLegacyOverridesJSONFields()[key]
+	_, inYAML := knownLegacyOverridesYAMLFields()[key]
+	return inJSON || inYAML
+}
+
+func (l *LegacyOverrides) UnmarshalJSON(data []byte) error {
+	type plain LegacyOverrides
+	if err := json.Unmarshal(data, (*plain)(l)); err != nil {
+		return err
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	for key := range knownLegacyOverridesJSONFields() {
+		delete(raw, key)
+	}
+	if len(raw) == 0 {
+		// No extension keys in this payload; clear any stale Extensions from a prior decode.
+		l.Extensions = nil
+		return nil
+	}
+
+	l.Extensions = make(map[string]any, len(raw))
+	for k, v := range raw {
+		var val any
+		if err := json.Unmarshal(v, &val); err != nil {
+			return err
+		}
+		l.Extensions[k] = val
+	}
+
+	// Convert flat legacy keys to typed instances; processExtensions must not be called here
+	// as it expects nested keys (e.g. "my_ext"), not flat legacy keys (e.g. "my_ext_field").
+	return processLegacyExtensions(l)
+}
+
+func (l LegacyOverrides) MarshalJSON() ([]byte, error) {
+	type plain LegacyOverrides
+	data, err := json.Marshal(plain(l))
+	if err != nil {
+		return nil, err
+	}
+	if len(l.Extensions) == 0 {
+		return data, nil
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	// Flatten typed extensions to legacy flat keys; copy other entries as-is.
+	for k, v := range l.Extensions {
+		ext, ok := v.(Extension)
+		if !ok {
+			return nil, fmt.Errorf("extension %q is not an Extension", k)
+		}
+
+		for fk, fv := range ext.ToLegacy() {
+			if _, exists := m[fk]; exists {
+				continue // known fields take precedence
+			}
+			b, err := json.Marshal(fv)
+			if err != nil {
+				return nil, err
+			}
+			m[fk] = b
+		}
+	}
+	return json.Marshal(m)
+}
+
+func (l *LegacyOverrides) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type plain LegacyOverrides
+	if err := unmarshal((*plain)(l)); err != nil {
+		return err
+	}
+	// Convert registered extension flat keys to typed instances, matching Overrides.Extensions.
+	return processLegacyExtensions(l)
+}
+
+func (l LegacyOverrides) MarshalYAML() (interface{}, error) {
+	type plain LegacyOverrides
+	if len(l.Extensions) == 0 {
+		return plain(l), nil
+	}
+	// Flatten typed extensions to legacy flat keys so the YAML wire format matches the legacy shape.
+	knownLegacy := knownLegacyOverridesYAMLFields()
+	flat, err := flattenExtensionEntries(l.Extensions)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make(map[string]any, len(flat))
+	for k, v := range flat {
+		if _, known := knownLegacy[k]; known {
+			continue
+		}
+		filtered[k] = v
+	}
+	cp := l
+	cp.Extensions = filtered
+	return plain(cp), nil
+}
+
+func (l *LegacyOverrides) toNewLimits() *Overrides {
+	return &Overrides{
 		Ingestion: IngestionOverrides{
 			RateStrategy:           l.IngestionRateStrategy,
 			RateLimitBytes:         l.IngestionRateLimitBytes,
@@ -191,6 +320,7 @@ func (l *LegacyOverrides) toNewLimits() Overrides {
 			MaxMetricsDuration:         l.MaxMetricsDuration,
 			UnsafeQueryHints:           l.UnsafeQueryHints,
 			LeftPadTraceIDs:            l.LeftPadTraceIDs,
+			MetricsSpanOnlyFetch:       l.MetricsSpanOnlyFetch,
 		},
 		Compaction: CompactionOverrides{
 			BlockRetention:     l.BlockRetention,
@@ -258,6 +388,7 @@ func (l *LegacyOverrides) toNewLimits() Overrides {
 			Dimensions:     l.CostAttribution.Dimensions,
 			MaxCardinality: l.CostAttribution.MaxCardinality,
 		},
+		Extensions: maps.Clone(l.Extensions), // copy extensions to avoid modifying the original
 	}
 }
 
@@ -273,8 +404,7 @@ func (l *perTenantLegacyOverrides) toNewOverrides() perTenantOverrides {
 	}
 
 	for tenantID, legacyLimits := range l.TenantLimits {
-		limits := legacyLimits.toNewLimits()
-		overrides.TenantLimits[tenantID] = &limits
+		overrides.TenantLimits[tenantID] = legacyLimits.toNewLimits()
 	}
 
 	return overrides

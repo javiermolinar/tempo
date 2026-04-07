@@ -41,7 +41,7 @@ func NewLocalBlock(ctx context.Context, existingBlock common.BackendBlock, l *lo
 		reader:       backend.NewReader(l),
 		writer:       backend.NewWriter(l),
 	}
-
+	// breakpoint
 	flushedBytes, err := c.reader.Read(ctx, nameFlushed, (uuid.UUID)(c.BlockMeta().BlockID), c.BlockMeta().TenantID, nil)
 	if err == nil {
 		flushedTime := time.Time{}

@@ -125,3 +125,31 @@ func TestInitGeneratorNoLocalBlocks_forcesGeneratorRingMode(t *testing.T) {
 	assert.True(t, app.cfg.Generator.ConsumeFromKafka)
 	assert.Equal(t, "custom", app.cfg.Generator.Ingest.Kafka.ConsumerGroup)
 }
+
+func TestSetupModuleManagerDistributorDependencies(t *testing.T) {
+	t.Run("single binary distributor depends on live-store and metrics-generator", func(t *testing.T) {
+		cfg := NewDefaultConfig()
+		cfg.Target = SingleBinary
+
+		app := &App{cfg: *cfg}
+		require.NoError(t, app.setupModuleManager())
+
+		assert.Contains(t, app.deps[Distributor], LiveStore)
+		assert.Contains(t, app.deps[Distributor], MetricsGenerator)
+		assert.Contains(t, app.ModuleManager.DependenciesForModule(Distributor), LiveStore)
+		assert.Contains(t, app.ModuleManager.DependenciesForModule(Distributor), MetricsGenerator)
+	})
+
+	t.Run("standalone distributor does not depend on live-store or metrics-generator", func(t *testing.T) {
+		cfg := NewDefaultConfig()
+		cfg.Target = Distributor
+
+		app := &App{cfg: *cfg}
+		require.NoError(t, app.setupModuleManager())
+
+		assert.NotContains(t, app.deps[Distributor], LiveStore)
+		assert.NotContains(t, app.deps[Distributor], MetricsGenerator)
+		assert.NotContains(t, app.ModuleManager.DependenciesForModule(Distributor), LiveStore)
+		assert.NotContains(t, app.ModuleManager.DependenciesForModule(Distributor), MetricsGenerator)
+	})
+}

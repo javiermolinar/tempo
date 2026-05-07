@@ -11,7 +11,7 @@ Last updated: 2026-05-07
 This document proposes adding a `similar_to()` predicate to TraceQL that enables finding structurally similar traces using MinHash-based locality-sensitive hashing.
 The goal is to support baseline trace selection, regression analysis, and trace comparison workflows without requiring client-side orchestration or new API endpoints.
 
-Two traces are "structurally similar" when they traverse the same set of services and operations — regardless of latency, errors, or timing.
+Two traces are "structurally similar" when they traverse the same set of services, operations, and semantic attributes — regardless of latency, errors, or timing.
 `similar_to()` makes this a first-class, storage-optimized filter in TraceQL.
 
 ### What the new primitive looks like
@@ -22,7 +22,7 @@ Two traces are "structurally similar" when they traverse the same set of service
 { similar_to("abc123def456") }
 ```
 
-Returns traces whose `service.name|span.name` signature set overlaps with trace `abc123def456`.
+Returns traces whose structural signature overlaps with trace `abc123def456`.
 The filter pushes down to parquet — dissimilar traces are skipped at the storage level, not fetched and discarded.
 
 **Find a healthy baseline for a broken trace:**
@@ -64,7 +64,7 @@ Useful for detecting when a specific code path started degrading.
 
 ### How it works (in brief)
 
-- At **block build time**, Tempo computes a [MinHash](https://en.wikipedia.org/wiki/MinHash) signature from each trace's `service.name|span.name` pairs and stores 4 band hashes as parquet columns (32 bytes per trace, zero-allocation computation).
+- At **block build time**, Tempo computes a [MinHash](https://en.wikipedia.org/wiki/MinHash) signature from each trace's structural identity (service names, span names, and well-known semantic attributes like `http.route`, `db.operation`, `rpc.method`) and stores 4 band hashes as parquet columns (32 bytes per trace, zero-allocation computation).
 - At **query time**, the frontend fetches the reference trace, computes its MinHash bands, and rewrites `similar_to("abc123")` into concrete column predicates (`minHashBand0 = X || minHashBand1 = Y || ...`). Shards filter using standard parquet predicate pushdown.
 - **Compaction** automatically recomputes MinHash when trace fragments merge, healing partial signatures from the initial flush.
 - The user never sees MinHash internals — they write `similar_to(traceID)`, Tempo handles the rest.
@@ -131,13 +131,39 @@ This works but has significant drawbacks:
 
 ### What "structurally similar" means
 
-Two traces are structurally similar when they traverse the same set of services and operations.
-The canonical representation is the **operation signature set**: the set of `service.name|span.name` pairs across all spans in the trace.
+Two traces are structurally similar when they traverse the same set of services, operations, and code paths.
+The canonical representation is the **operation signature set**: a set of strings derived from each span's `service.name`, `span.name`, and well-known semantic attributes.
+
+Using `span.name` alone is insufficient. Real instrumentation often produces generic span names (`HTTP GET`, `query`, `execute`) where the distinguishing information is in semantic convention attributes like `http.route`, `db.operation`, or `messaging.destination.name`.
+
+The signature for each span is built from available attributes in priority order:
+
+| Span kind | Signature components | Example signature |
+|-----------|---------------------|-------------------|
+| HTTP | `service.name \| span.name \| http.route` | `checkout\|POST\|/api/cart` |
+| RPC | `service.name \| span.name \| rpc.service \| rpc.method` | `payment\|grpc\|PaymentService\|Charge` |
+| Database | `service.name \| span.name \| db.system \| db.operation` | `pricing-db\|query\|postgresql\|SELECT` |
+| Messaging | `service.name \| span.name \| messaging.system \| messaging.destination.name` | `notification\|send\|kafka\|booking.confirmed` |
+| Generic | `service.name \| span.name` | `inventory\|checkStock` |
+
+The attribute allowlist follows [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/):
+
+- `http.route`, `http.request.method` (`http.method` for older conventions)
+- `rpc.service`, `rpc.method`
+- `db.system`, `db.operation`, `db.name`
+- `messaging.system`, `messaging.operation`, `messaging.destination.name`
+
+Attributes not present on a span are omitted from its signature. The signature is deterministic for a given span regardless of attribute order.
 
 For example, a checkout trace might produce:
 
 ```
-{ "checkout|POST /cart", "checkout|validateCart", "payment|charge", "inventory|checkStock", "shipping|estimateDelivery" }
+{ "checkout|POST|/api/cart",
+  "checkout|validateCart",
+  "payment|charge|grpc|PaymentService|Charge",
+  "pricing-db|query|postgresql|SELECT",
+  "inventory|checkStock",
+  "notification|send|kafka|booking.confirmed" }
 ```
 
 **Jaccard similarity** over these sets measures structural overlap:
@@ -161,7 +187,7 @@ The client receives only traces that are already known to be structurally simila
 
 ### Why the root span is not required
 
-Resource attributes (`resource.service.name`) and span names (`span.name`) are present on **every span**, not just the root.
+Resource attributes (`resource.service.name`), span names, and semantic convention attributes (`http.route`, `db.operation`, etc.) are present on **every span**, not just the root.
 The signature set can be computed from any subset of a trace's spans.
 This is critical because Tempo cannot guarantee root span availability — it may arrive late, be in a different block, or never arrive at all.
 
@@ -226,7 +252,7 @@ func (s Signature) ToBands() Bands           // B band hashes from K values
 func AnyBandMatches(a, b Bands) bool         // filter predicate: 1.4ns per check
 ```
 
-**Insertion point:** The block builder calls `minhash.Compute` with the `service.name|span.name` pairs extracted from the same span loop that already populates `ServiceStats`, then stores the resulting 4 band hashes in the parquet trace-level columns.
+**Insertion point:** The block builder extracts the signature for each span (service name, span name, and available semantic attributes from the allowlist), calls `minhash.Compute` with the resulting signature set, and stores the 4 band hashes in the parquet trace-level columns. This runs inside the same span loop that already populates `ServiceStats`.
 
 ### TraceQL: the similar_to predicate
 

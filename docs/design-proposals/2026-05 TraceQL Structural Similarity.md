@@ -1,7 +1,7 @@
 ---
 Authors: Javier Molina (@javiermolinar)
-Created: May 2025
-Last updated: 2025-05-07
+Created: May 2026
+Last updated: 2026-05-07
 ---
 
 # TraceQL Structural Similarity

@@ -11,6 +11,64 @@ Last updated: 2026-05-07
 This document proposes adding a `similar_to()` predicate to TraceQL that enables finding structurally similar traces using MinHash-based locality-sensitive hashing.
 The goal is to support baseline trace selection, regression analysis, and trace comparison workflows without requiring client-side orchestration or new API endpoints.
 
+Two traces are "structurally similar" when they traverse the same set of services and operations — regardless of latency, errors, or timing.
+`similar_to()` makes this a first-class, storage-optimized filter in TraceQL.
+
+### What the new primitive looks like
+
+**Find traces shaped like mine:**
+
+```
+{ similar_to("abc123def456") }
+```
+
+Returns traces whose `service.name|span.name` signature set overlaps with trace `abc123def456`.
+The filter pushes down to parquet — dissimilar traces are skipped at the storage level, not fetched and discarded.
+
+**Find a healthy baseline for a broken trace:**
+
+```
+{ resource.service.name = "checkout"
+  && name = "POST /cart"
+  && status != error
+  && similar_to("abc123def456") }
+```
+
+Combines structural similarity with attribute filters.
+Returns only healthy checkout traces that traverse the same code paths as the broken trace.
+
+**Find a baseline with representative duration (one-query baseline selection):**
+
+```
+{ resource.service.name = "checkout"
+  && name = "POST /cart"
+  && status != error
+  && similar_to("abc123def456") }
+| quantile_over_time(duration, 0.5)
+```
+
+Composes with the metrics pipeline.
+Returns the p50 duration of structurally similar healthy traces, plus **exemplar trace IDs** at that percentile.
+The exemplars are ideal baseline candidates — structurally similar, healthy, and representative duration — ready to feed into a trace diff engine.
+
+**Compare structural cohorts over time:**
+
+```
+{ resource.service.name = "checkout"
+  && similar_to("abc123def456") }
+| rate() by (status)
+```
+
+Shows the rate of matching vs erroring traces within the structural cohort over time.
+Useful for detecting when a specific code path started degrading.
+
+### How it works (in brief)
+
+- At **block build time**, Tempo computes a [MinHash](https://en.wikipedia.org/wiki/MinHash) signature from each trace's `service.name|span.name` pairs and stores 4 band hashes as parquet columns (32 bytes per trace, zero-allocation computation).
+- At **query time**, the frontend fetches the reference trace, computes its MinHash bands, and rewrites `similar_to("abc123")` into concrete column predicates (`minHashBand0 = X || minHashBand1 = Y || ...`). Shards filter using standard parquet predicate pushdown.
+- **Compaction** automatically recomputes MinHash when trace fragments merge, healing partial signatures from the initial flush.
+- The user never sees MinHash internals — they write `similar_to(traceID)`, Tempo handles the rest.
+
 ### Table of Contents
 
 - [Context](#context)

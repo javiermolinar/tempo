@@ -331,9 +331,10 @@ func printComparison(c comparison) {
 func main() {
 	scenarioDir := os.Getenv("SCENARIO_DIR")
 	if scenarioDir == "" {
-		// Default to the hackathon repo path
-		home, _ := os.UserHomeDir()
-		scenarioDir = home + "/grafana/hackathon-16-tempo-private-eye/.agents/skills/tempo-booking-performance-cache-demo/assets"
+		fmt.Fprintf(os.Stderr, "Set SCENARIO_DIR to the directory containing tercios scenario JSON files.\n")
+		fmt.Fprintf(os.Stderr, "Example: SCENARIO_DIR=path/to/scenarios go run .\n")
+		fmt.Fprintf(os.Stderr, "See https://github.com/javiermolinar/tercios for scenario file format.\n")
+		os.Exit(1)
 	}
 
 	slowPath := scenarioDir + "/scenario-booking-distributed-slow-cache-miss.json"

@@ -96,7 +96,7 @@ Trace comparison is a common debugging workflow: given a slow or broken trace, f
 This workflow requires answering the question: "which traces have the same shape as this one?"
 
 Today this is only possible through client-side orchestration.
-The Tempo Private Eye hackathon (Hackathon 16) built a prototype that:
+A previous internal hackathon built a prototype that:
 
 1. Fetches the seed trace and extracts service name, operation name, and resource attributes.
 2. Builds a TraceQL search query filtered to `status != error`.
@@ -393,7 +393,7 @@ Full results in the [Tuning section](#tuning-k-b-and-r-parameters).
 
 ### Real scenario validation
 
-The real-world test scenarios come from the Tempo Private Eye hackathon (tercios scenario files):
+The real-world test scenarios come from [tercios](https://github.com/javiermolinar/tercios) scenario files:
 
 - **Booking slow (cache-miss):** 10 services, 10 unique `service|operation` signatures.
 - **Booking fast (cache-hit):** same 10 services + 2 new (`pricing-cache-gateway`, `pricing-cache-warmer`), 12 unique signatures.
@@ -442,7 +442,7 @@ Rejected in favor of MinHash's probabilistic approach.
 
 ### Client-side scoring with full trace fetches
 
-The approach used in the Hackathon 16 prototype.
+The approach used in a previous hackathon prototype.
 Works but requires O(N) trace fetches for candidate scoring.
 Cannot leverage storage-level filtering.
 Logic must be duplicated across every consumer.
@@ -507,4 +507,4 @@ Queries using `similar_to()` on deployments without the flag return an error.
 | Monte Carlo + real scenario validation | `pkg/minhash/minhash_test.go` | Included in `go test -v` |
 | Parquet integration pattern tests | `pkg/minhash/parquet_test.go` | Included in `go test -v` |
 | Parameter search tool (standalone) | `docs/design-proposals/similar-to-validation/` | `cd similar-to-validation && go run .` |
-| Tercios scenario files (external) | hackathon-16 repo | See [Test Scenarios Playbook](../../TempoPrivateEye-Test-Scenarios.md) |
+| Tercios trace generator (external) | [github.com/javiermolinar/tercios](https://github.com/javiermolinar/tercios) | `tercios --dry-run -o json --scenario-file=<file>` |

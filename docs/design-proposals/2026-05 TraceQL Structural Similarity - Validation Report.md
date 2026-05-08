@@ -456,6 +456,30 @@ The aggressive strategy (also dropping spans with short names ≤ 4 chars) was r
 - Bad matches: `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestBadMatches -v`
 - Strategy comparison: `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestSignatureStrategies -v`
 
+## Compaction impact
+
+Higher compaction levels merge trace fragments from multiple blocks into a single block, producing more complete traces with richer signature sets. This should improve MinHash quality because:
+
+1. A trace split across two level-1 blocks might have 5 signatures in each. After compaction merges them into one level-3 block, the trace has up to 10 signatures — the full structural picture.
+2. MinHash computed on the complete signature set is more accurate than MinHash computed on partial sets.
+3. The `assignNestedSetModelBoundsAndServiceStats` function (where MinHash is computed) runs on the merged trace during compaction, automatically recomputing bands from the full span set.
+
+**This is validated by design, not empirically.** Our test blocks contain different trace IDs at different compaction levels — we cannot compare the same trace pre- vs post-compaction. Testing the compaction effect would require capturing the same trace ID in both a level-1 block (fragmented) and a level-4 block (merged), which requires a controlled environment.
+
+What we did observe across compaction levels:
+
+| Compaction | Blocks | Avg sig p50 | Avg span p50 | J<0.1 | J<0.2 |
+|---|---|---|---|---|---|
+| 1 | 1 | 13 | 23 | 0 | 0 |
+| 3 | 7 | 3 | 6 | 0 | 1 |
+| 4 | 2 | 1 | 1 | 0 | 4 |
+
+These differences reflect workload mix (which services land in which blocks), not compaction quality. The level-1 block contains only pageserver traces (deep call graphs), while level-4 blocks are dominated by single-span DB traces.
+
+For the baseline use case — "find a healthy trace from hours/days ago" — the target blocks will typically be at compaction level 3+ where most traces are fully merged. MinHash quality is highest in exactly this scenario.
+
+**Reproduce:** `go test ./pkg/minhash/ -run TestCompactionImpact -v`
+
 ## Limitations and open questions
 
 ### Single-span traces

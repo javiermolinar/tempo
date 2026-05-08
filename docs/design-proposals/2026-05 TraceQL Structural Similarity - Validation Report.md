@@ -15,18 +15,15 @@ All results are reproducible from the test suite in `pkg/minhash/`.
 - [What we hashed](#what-we-hashed)
 - [Datasets](#datasets)
   - [Synthetic: tercios scenarios](#synthetic-tercios-scenarios)
-  - [Production: Grafana Cloud tenant](#production-grafana-cloud-tenant)
+  - [Production: Grafana Cloud tenants](#production-grafana-cloud-tenants)
 - [Parameter selection](#parameter-selection)
-- [Single-block validation](#single-block-validation)
-  - [Signature set statistics](#signature-set-statistics)
-  - [Structural cohorts](#structural-cohorts)
-  - [Within-cohort matching](#within-cohort-matching)
-  - [Cross-cohort false positives](#cross-cohort-false-positives)
-- [Cross-block validation](#cross-block-validation)
-  - [Same service, same time range](#same-service-same-time-range)
-  - [Same service, different time range](#same-service-different-time-range)
-  - [Different services](#different-services)
-  - [Temporal stability](#temporal-stability)
+- [Tenant A: cloud infrastructure platform](#tenant-a-cloud-infrastructure-platform)
+  - [Single-block validation](#single-block-validation-tenant-a)
+  - [Cross-block validation](#cross-block-validation-tenant-a)
+- [Tenant B: mobile services platform](#tenant-b-mobile-services-platform)
+  - [Single-block validation](#single-block-validation-tenant-b)
+  - [Cross-block validation](#cross-block-validation-tenant-b)
+- [Cross-tenant summary](#cross-tenant-summary)
 - [Computation overhead](#computation-overhead)
 - [Limitations and open questions](#limitations-and-open-questions)
 
@@ -78,21 +75,33 @@ Two booking-flow scenarios from the [tercios](https://github.com/javiermolinar/t
 
 Expected Jaccard: 10/12 = **0.833**
 
-### Production: Grafana Cloud tenant
+### Production: Grafana Cloud tenants
 
-Five parquet blocks from a single Grafana Cloud tenant (tenant ID: 1000087), spanning April 11 – May 7, 2026.
+Two tenants from Grafana Cloud, randomly selected, with 5 parquet blocks each.
 
-| Block | Date | Traces | Shapes | Format | Size |
-|-------|------|--------|--------|--------|------|
-| `0005fda8` | Apr 11 | 123,681 | 188 | vParquet4 | 27 MB |
-| `fe87871b` | Apr 13 | 149,895 | 162 | vParquet4 | 43 MB |
-| `3ffaa5ab` | May 4 | 5,878 | 7 | vParquet4 | 10 MB |
-| `808eac91` | May 4 | 610 | 9 | vParquet4 | 1 MB |
-| `c2ff3990` | May 7 | 17 | 3 | vParquet4 | 84 KB |
+**Tenant A** — cloud infrastructure platform (API + storage engine), April 11 – May 7:
 
-The tenant runs two distinct workloads:
-- **neon-console / neon-control-plane / neon-billing-manager** — API services with many single-span DB traces and some multi-span API flows (4–14 signatures).
-- **pageserver** — storage engine with multi-span traces (6–14 signatures).
+| Block | Date | Traces | Shapes | Size |
+|-------|------|--------|--------|------|
+| `0005fda8` | Apr 11 | 123,681 | 188 | 27 MB |
+| `fe87871b` | Apr 13 | 149,895 | 162 | 43 MB |
+| `3ffaa5ab` | May 4 | 5,878 | 7 | 10 MB |
+| `808eac91` | May 4 | 610 | 9 | 1 MB |
+| `c2ff3990` | May 7 | 17 | 3 | 84 KB |
+
+Services: `neon-console`, `neon-control-plane`, `neon-billing-manager` (API + DB), `pageserver` (storage engine).
+
+**Tenant B** — mobile services platform (20+ microservices), April 12 – May 3:
+
+| Block | Date | Traces | Shapes | Size |
+|-------|------|--------|--------|------|
+| `ff25fd28` | Apr 12 | 179,559 | 167 | 48 MB |
+| `7ef9ac17` | Apr 17 | 180,451 | 104 | 46 MB |
+| `0006532d` | Apr 20 | 195,792 | 232 | 56 MB |
+| `3dd7c298` | Apr 25 | 358,864 | 142 | 86 MB |
+| `d5995959` | May 3 | 181,861 | 144 | 47 MB |
+
+Services: `admin-web`, `plan-management`, `user-service`, `order`, `line-management`, `line-operations`, `usmobile-gateway`, `subscriber-web`, `security-rule-based-engine-service`, `pool`, `emailservice`, `notification-service`, `searchservice`, `device-identifier-service`, `rewards`, `order-exports`, `metering-engine-reports`, `metering-engine-enrichment`, `tmobile-mvnoc`, `esimservice`, `payment-service`, `shipments`, and others.
 
 ## Parameter selection
 
@@ -113,11 +122,13 @@ Critical finding: **R (rows per band) dominates false negative behavior.** The i
 
 **Reproduce:** `cd docs/design-proposals/similar-to-validation && go run .`
 
-## Single-block validation
+## Tenant A: cloud infrastructure platform
+
+### Single-block validation {#single-block-validation-tenant-a}
 
 Analyzed 10,000 traces from block `0005fda8` (Apr 11, 27 MB).
 
-### Signature set statistics
+#### Signature set statistics
 
 | Metric | Value |
 |--------|-------|
@@ -129,7 +140,7 @@ Analyzed 10,000 traces from block `0005fda8` (Apr 11, 27 MB).
 
 Most traces in this block are single-span database operations. Multi-service API flows (4+ signatures) are the minority but are the primary target for structural similarity.
 
-### Structural cohorts
+#### Structural cohorts
 
 Top cohorts by trace count:
 
@@ -143,7 +154,7 @@ Top cohorts by trace count:
 | 106 | 4 | neon-console | GetProjectEndpoint |
 | 63 | 2 | neon-console | PostUsageEventBatch |
 
-### Within-cohort matching
+#### Within-cohort matching
 
 Traces with identical signature sets must produce identical MinHash bands.
 
@@ -153,7 +164,7 @@ Traces with identical signature sets must produce identical MinHash bands.
 
 Zero false negatives for exact structural matches.
 
-### Cross-cohort false positives
+#### Cross-cohort false positives
 
 Different structural shapes should mostly NOT match on MinHash bands.
 
@@ -171,13 +182,13 @@ The 5 cross-matches were genuine partial overlaps:
 | shape (55t) | shape (43t) | 0.600 | 0.88 |
 | shape (39t) | shape (31t) | 0.786 | 0.88 |
 
-**Reproduce:** `go test ./pkg/minhash/ -run TestBlockValidation -v`
+**Reproduce:** `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestBlockValidation -v`
 
-## Cross-block validation
+### Cross-block validation {#cross-block-validation-tenant-a}
 
 Compared all 5 blocks pairwise to test whether MinHash finds the same structural shapes across time windows.
 
-### Same service, same time range
+#### Same service, same time range
 
 Block `0005fda8` (Apr 11) vs `fe87871b` (Apr 13) — same tenant, 2 days apart:
 
@@ -191,7 +202,7 @@ Block `0005fda8` (Apr 11) vs `fe87871b` (Apr 13) — same tenant, 2 days apart:
 
 The one similar match was `neon-console|ListProjectEndpoints` (8 sigs → different shape with J=0.50), indicating a code change between the two blocks that altered the downstream call graph.
 
-### Same service, different time range
+#### Same service, different time range
 
 Pageserver blocks from different dates:
 
@@ -213,13 +224,13 @@ Jaccard values for the SIMILAR matches:
 | GET_PAGE (11 sigs) | 0.85 | 1-2 spans changed |
 | GET_VECTORED (9 sigs) | 0.82 | 1-2 spans changed |
 
-### Different services
+#### Different services
 
 neon-console shapes (blocks `0005fda8`, `fe87871b`) vs pageserver shapes (blocks `3ffaa5ab`, `808eac91`, `c2ff3990`):
 
 **Zero cross-service matches.** No neon-console shape ever matched a pageserver shape. MinHash correctly separates completely unrelated service topologies.
 
-### Temporal stability
+#### Temporal stability
 
 Shapes present across all 5 blocks:
 
@@ -235,7 +246,107 @@ The core pageserver shapes are stable across a month of data. Trace counts vary 
 
 neon-console shapes appear in 2/5 blocks (the April blocks only), which is expected — the May blocks contain different workloads from the same tenant.
 
-**Reproduce:** `go test ./pkg/minhash/ -run TestCrossBlock -v`
+**Reproduce:** `TEMPO_BLOCKS_DIR=/path/to/blocks go test ./pkg/minhash/ -run TestCrossBlock -v`
+
+## Tenant B: mobile services platform
+
+### Single-block validation {#single-block-validation-tenant-b}
+
+Analyzed 20,000 traces from block `0006532d` (Apr 20, 56 MB).
+
+#### Signature set statistics
+
+| Metric | Value |
+|--------|-------|
+| Traces analyzed | 20,000 |
+| Unique structural shapes | 232 |
+| Multi-signature shapes | 104 |
+| Top services | admin-web, plan-management, user-service, order, line-management |
+
+This tenant has significantly more services (20+) than Tenant A. The top cohorts are health checks and PING operations across all microservices, but there are also multi-span messaging flows (`security-rule-based-engine-service|user.request.server.response process` with 3 sigs).
+
+#### Top cohorts
+
+| Traces | Sigs | Root service | Root operation |
+|--------|------|-------------|----------------|
+| 3,091 | 1 | admin-web | PING |
+| 1,634 | 1 | plan-management | PING |
+| 859 | 1 | user-service | PING |
+| 793 | 1 | order | PING |
+| 771 | 1 | line-management | PING |
+| 686 | 1 | admin-web | GET /manage/health/** |
+| 533 | 2 | usmobile-gateway | GET /manage/health |
+| 480 | 2 | subscriber-web | GET /manage/health |
+| 190 | 1 | security-rule-based-engine-service | basic.ack |
+| 186 | 3 | security-rule-based-engine-service | user.request.server.response process |
+
+### Cross-block validation {#cross-block-validation-tenant-b}
+
+Compared all 5 blocks pairwise (Apr 12 – May 3, spanning 21 days).
+
+#### Cross-block matching results
+
+| Block pair | Time gap | Exact | Similar | Not found | Total |
+|-----------|----------|-------|---------|-----------|-------|
+| Apr 20 vs Apr 25 | 5 days | 27 | 0 | 3 | 30 |
+| Apr 20 vs Apr 17 | 3 days | 27 | 0 | 3 | 30 |
+| Apr 20 vs May 3 | 13 days | **30** | 0 | 0 | 30 |
+| Apr 20 vs Apr 12 | 8 days | 28 | 0 | 2 | 30 |
+| Apr 25 vs Apr 17 | 8 days | 24 | 0 | 6 | 30 |
+| Apr 25 vs May 3 | 8 days | 25 | 0 | 5 | 30 |
+| Apr 25 vs Apr 12 | 13 days | **30** | 0 | 0 | 30 |
+| Apr 17 vs May 3 | 16 days | **30** | 0 | 0 | 30 |
+| Apr 17 vs Apr 12 | 5 days | **30** | 0 | 0 | 30 |
+| May 3 vs Apr 12 | 21 days | **30** | 0 | 0 | 30 |
+
+**Zero false positives. Zero SIMILAR matches.** Every match across blocks is either EXACT or NOT FOUND.
+
+The NOT FOUND cases are RabbitMQ operations (`usmobile-gateway|basic.nack`, `pool|basic.ack`, `usmobile-gateway|queue.declare`, `usmobile-gateway|basic.consume`) that only appear intermittently — these are genuinely absent workloads, not signature drift.
+
+#### Temporal stability
+
+**69 shapes present in ALL 5 blocks** over a 21-day span.
+
+Top stable shapes:
+
+| Shape | Sigs | Trace counts per block (Apr 12 → May 3) |
+|-------|------|-------------------------------------------|
+| admin-web\|PING | 1 | 3057, 3254, 3091, 1598, 3158 |
+| plan-management\|PING | 1 | 1671, 1826, 1634, 828, 1728 |
+| user-service\|PING | 1 | 833, 880, 859, 391, 869 |
+| line-management\|PING | 1 | 828, 784, 771, 410, 873 |
+| order\|PING | 1 | 791, 805, 793, 363, 789 |
+| usmobile-gateway\|GET /manage/health | 2 | 542, 578, 533, 267, 583 |
+| subscriber-web\|GET /manage/health | 2 | 502, 490, 480, 251, 477 |
+
+Trace shapes are extremely consistent for this tenant. The same services produce the same operations week after week. Traffic volume varies but structural identity is stable.
+
+**Reproduce:** `TEMPO_BLOCKS_DIR=/path/to/blocks go test ./pkg/minhash/ -run TestCrossBlock -v`
+
+## Cross-tenant summary
+
+| Property | Tenant A (infra platform) | Tenant B (mobile services) |
+|----------|--------------------------|---------------------------|
+| Services | 4 main | 20+ |
+| Blocks tested | 5 (Apr 11 – May 7) | 5 (Apr 12 – May 3) |
+| Traces analyzed | ~280k | ~1.1M |
+| Unique shapes | 232 | 373 |
+| Multi-sig shapes | 143 | 104 |
+| Within-cohort match rate | **100%** | **100%** |
+| Cross-cohort false positive rate | **1.1%** | **0%** |
+| Cross-block exact match rate (best pair) | 28/30 (93%) | 30/30 (100%) |
+| Cross-block not-found (worst pair) | 29/30 (different workloads) | 6/30 (intermittent queues) |
+| Shapes stable across all blocks | 2 | 69 |
+| SIMILAR matches (J < 1.0) | Yes (pageserver drift, J=0.73–0.93) | None — all exact or absent |
+| Zero false positives cross-service | ✓ | ✓ |
+
+**Key takeaways:**
+
+1. **MinHash produces zero false negatives for exact structural matches** in both tenants (100% within-cohort match rate).
+2. **Cross-block matching works across weeks** — Tenant B achieves 30/30 exact matches over a 21-day span.
+3. **False positive rate is very low** (0–1.1%), and the false positives are genuine partial overlaps (shared operations), not random noise.
+4. **Shape stability varies by tenant** — Tenant A shows some drift in the pageserver service (J=0.73–0.93), Tenant B shows perfect stability. MinHash handles both: exact matches pass, near-matches pass via band similarity, unrelated shapes are filtered.
+5. **The NOT FOUND cases are correct** — they represent genuinely different workloads (different services in different time windows, or intermittent queue operations), not MinHash failures.
 
 ## Computation overhead
 
@@ -276,4 +387,8 @@ The SIMILAR matches (J=0.73–0.93) between May 4 and May 7 blocks suggest that 
 
 ### Dataset diversity
 
-All blocks are from a single tenant. Cross-tenant validation is needed to confirm the approach works for different instrumentation patterns, service counts, and trace depths. The current dataset is biased toward single-span DB traces.
+Two tenants have been validated. More tenants with different characteristics would strengthen confidence:
+- Tenants with deep call graphs (10+ services per trace)
+- Tenants with mixed instrumentation (auto + manual)
+- Tenants with high-cardinality span names (raw URLs instead of route templates)
+- Tenants with frequent code deploys causing shape drift

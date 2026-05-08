@@ -520,6 +520,54 @@ This is safe: the query returns a superset of the structurally similar traces un
 `similar_to()` is gated behind a feature flag during the rollout period.
 Queries using `similar_to()` on deployments without the flag return an error.
 
+## Use cases beyond baseline selection
+
+The MinHash columns are a general-purpose structural fingerprint. The `similar_to()` predicate turns trace structure into a queryable, indexable dimension — anything you can do with `service.name` or `duration` today, you can now do with "trace shape."
+
+### Regression detection after deploys
+
+Compare the set of trace shapes before and after a deploy. If a known shape disappears or a new shape appears, the deploy changed the call graph.
+
+```
+{ resource.service.name = "checkout" && similar_to("<pre-deploy-trace>") } | rate()
+```
+
+If rate drops to zero after the deploy, that code path is gone or changed. No manual trace inspection needed.
+
+### SLOs per code path
+
+Today SLOs are per service or per operation. But `POST /checkout` might have different downstream call graphs depending on payment method (credit card → payment + fraud check, PayPal → redirect only, gift card → balance check). Each has different latency expectations.
+
+```
+{ resource.service.name = "checkout" && name = "POST /checkout"
+  && similar_to("<credit-card-flow-trace>") }
+| quantile_over_time(duration, 0.99)
+```
+
+This scopes the SLO to a specific structural shape, not just the endpoint.
+
+### Canary comparison
+
+Compare structural shapes from canary ring vs stable ring:
+
+```
+{ resource.deployment.ring = "canary" && similar_to("<stable-trace>") } | rate()
+```
+
+If the canary produces traces that don't match any stable shape, the canary introduced a new code path. If the rate of matching traces drops, the canary changed existing behavior.
+
+### Alert grouping
+
+When many traces start failing, group by shape to identify which code path is affected. Instead of "500 errors on checkout," you get "500 errors specifically on the credit-card checkout flow, not the PayPal flow." The MinHash bands let you partition failing traces by structural identity in the alert rule.
+
+### Intelligent sampling
+
+If 80% of traces for a service have the same shape, you only need one representative per shape per time window. MinHash band columns let the metrics generator or a sampling policy group by structural identity at the storage level, sampling one exemplar per shape instead of random sampling.
+
+### Service dependency discovery
+
+Traces with matching MinHash bands traverse the same set of services and operations. Aggregating band values across traces for a time window gives a cheap approximation of service graph discovery without the full graph computation.
+
 ## Future work
 
 - **Adaptive K/B/R tuning.** Analyze production workloads to determine if K=8 is sufficient or if certain tenants benefit from larger signatures.

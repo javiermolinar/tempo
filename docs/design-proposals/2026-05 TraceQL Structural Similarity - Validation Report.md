@@ -411,19 +411,50 @@ These are **completely different API flows** that collide because one generic sp
 
 113 of 223 band matches (51%) have Jaccard < 0.4. These are the false positives that the other predicates in the query (`service.name`, `name`, `status`) must eliminate.
 
-### Mitigation: signature composition improvements
+### Mitigation: signature composition strategies tested
 
-The problem is not MinHash — it correctly identifies that these traces share a signature. The problem is that `subscriber-web|GET|GET` is a **meaningless signature** that appears in many unrelated traces.
+Five signature composition strategies were tested against the same block (50,000 traces, exhaustive pairwise comparison):
 
-Potential mitigations (not yet implemented):
+| Strategy | Band matches | J<0.1 | J<0.2 | J≥0.7 | Empty traces | Worst J |
+|---|---|---|---|---|---|---|
+| **Baseline (current)** | 223 | 14 | 59 | 33 | 0 | 0.059 |
+| Drop HTTP-method-only spans | 187 | 10 | 39 | 30 | 2 | 0.062 |
+| Replace HTTP-method-only with sentinel | 199 | 3 | 34 | 34 | 0 | 0.059 |
+| **Drop HTTP-method-only + exclude http.method** | **148** | **4** | **20** | **29** | **2** | **0.085** |
+| Aggressive generic drop (also short names) | 130 | 4 | 20 | 27 | 26,993 | 0.085 |
 
-1. **Drop HTTP-method-only signatures.** If `span.name` matches a known HTTP method (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`) and no `http.route` is present, exclude the span from the signature set. It adds collision risk without structural signal.
-2. **Require minimum signature diversity.** If a trace's signature set after deduplication has only 1 element, skip MinHash entirely — a single-element set offers no fuzzy matching value over an exact hash.
-3. **Normalize client/server span pairs.** Many traces have both a client span (`subscriber-web|GET|GET`) and a server span (`subscriber-web|GET /api/v1/configuration|/api/v1/configuration|GET`). The client span is redundant and should be suppressed when a more specific server span from the same service exists.
+**Winner: "Drop HTTP-method-only + exclude http.method from sigs"**
 
-These are signature composition changes in the block builder, not MinHash parameter changes. The `pkg/minhash/` package remains unchanged.
+Two changes from the baseline:
 
-**Reproduce:** `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestBadMatches -v`
+1. **Drop spans where `span.name` is a bare HTTP method (`GET`, `POST`, etc.) and no `http.route` is present.** These produce generic signatures like `subscriber-web|GET|GET` that collide across unrelated endpoints. Only 1,400 spans dropped across 50,000 traces (2 traces become empty).
+
+2. **Exclude `http.method` / `http.request.method` from the semantic attribute allowlist.** When the span name already contains the HTTP method (e.g., `GET /api/v1/configuration`), including `http.method=GET` in the signature is redundant. For well-instrumented spans it adds noise; for poorly-instrumented spans (bare method names) it creates the collision problem.
+
+Results vs baseline:
+- Bad matches (J<0.2): **59 → 20** (66% reduction)
+- Very bad matches (J<0.1): **14 → 4** (71% reduction)
+- Good matches (J≥0.7): 33 → 29 (minimal loss)
+- Worst match Jaccard: **0.059 → 0.085**
+
+The remaining worst match (`GET /mobile/v2/profile` vs `GET /api/v1/announcement`, J=0.085) shares 4 real DB operations (`UserRepository.findById`, `UserRoleAssignmentRepository.findByAccountIdAndUserId`, etc.) — a legitimate partial overlap from shared authentication middleware, not a generic-span collision.
+
+### Updated semantic attribute allowlist
+
+Based on the strategy comparison, the recommended allowlist excludes `http.method` / `http.request.method`:
+
+| Protocol | Attributes included |
+|----------|-------------------|
+| HTTP | `http.route` |
+| RPC | `rpc.service`, `rpc.method` |
+| Database | `db.system`, `db.operation`, `db.name` |
+| Messaging | `messaging.system`, `messaging.operation`, `messaging.destination.name` |
+
+The aggressive strategy (also dropping spans with short names ≤ 4 chars) was rejected — it kills 27,000 traces (54%) for no additional improvement in bad match rate.
+
+**Reproduce:**
+- Bad matches: `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestBadMatches -v`
+- Strategy comparison: `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestSignatureStrategies -v`
 
 ## Limitations and open questions
 

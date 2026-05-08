@@ -64,7 +64,7 @@ Useful for detecting when a specific code path started degrading.
 
 ### How it works (in brief)
 
-- At **block build time**, Tempo computes a [MinHash](https://en.wikipedia.org/wiki/MinHash) signature from each trace's structural identity (service names, span names, and well-known semantic attributes like `http.route`, `db.operation`, `rpc.method`) and stores 4 band hashes as parquet columns (32 bytes per trace, zero-allocation computation).
+- At **block build time**, Tempo computes a [MinHash](https://en.wikipedia.org/wiki/MinHash) signature from each trace's structural identity (service names, span names, and well-known semantic attributes like `http.route`, `db.operation`, `rpc.method` — excluding generic HTTP-method-only spans) and stores 4 band hashes as parquet columns (32 bytes per trace, zero-allocation computation).
 - At **query time**, the frontend fetches the reference trace, computes its MinHash bands, and rewrites `similar_to("abc123")` into concrete column predicates (`minHashBand0 = X || minHashBand1 = Y || ...`). Shards filter using standard parquet predicate pushdown.
 - **Compaction** automatically recomputes MinHash when trace fragments merge, healing partial signatures from the initial flush.
 - The user never sees MinHash internals — they write `similar_to(traceID)`, Tempo handles the rest.
@@ -140,7 +140,7 @@ The signature for each span is built from available attributes in priority order
 
 | Span kind | Signature components | Example signature |
 |-----------|---------------------|-------------------|
-| HTTP | `service.name \| span.name \| http.route` | `checkout\|POST\|/api/cart` |
+| HTTP | `service.name \| span.name \| http.route` | `checkout\|POST /cart\|/api/cart` |
 | RPC | `service.name \| span.name \| rpc.service \| rpc.method` | `payment\|grpc\|PaymentService\|Charge` |
 | Database | `service.name \| span.name \| db.system \| db.operation` | `pricing-db\|query\|postgresql\|SELECT` |
 | Messaging | `service.name \| span.name \| messaging.system \| messaging.destination.name` | `notification\|send\|kafka\|booking.confirmed` |
@@ -148,10 +148,14 @@ The signature for each span is built from available attributes in priority order
 
 The attribute allowlist follows [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/):
 
-- `http.route`, `http.request.method` (`http.method` for older conventions)
+- `http.route`
 - `rpc.service`, `rpc.method`
 - `db.system`, `db.operation`, `db.name`
 - `messaging.system`, `messaging.operation`, `messaging.destination.name`
+
+`http.method` / `http.request.method` are **deliberately excluded** — they are redundant when the span name already contains the method, and they create collision noise for poorly-instrumented spans.
+
+Additionally, spans where `span.name` is a bare HTTP method (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`) and no `http.route` is present are **excluded from the signature set entirely**. These produce generic signatures (e.g., `subscriber-web|GET`) that collide across unrelated endpoints. See the [Validation Report](./2026-05%20TraceQL%20Structural%20Similarity%20-%20Validation%20Report.md#mitigation-signature-composition-strategies-tested) for the empirical comparison of strategies.
 
 Attributes not present on a span are omitted from its signature. The signature is deterministic for a given span regardless of attribute order.
 

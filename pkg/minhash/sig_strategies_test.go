@@ -9,10 +9,22 @@ import (
 
 	pq "github.com/parquet-go/parquet-go"
 
+	"github.com/grafana/tempo/pkg/drain"
 	"github.com/grafana/tempo/pkg/minhash"
 	vparquet4 "github.com/grafana/tempo/tempodb/encoding/vparquet4"
 	vparquet5 "github.com/grafana/tempo/tempodb/encoding/vparquet5"
 )
+
+type rawTrace struct {
+	rootSvc  string
+	rootSpan string
+	spans    []rawSpan
+}
+
+type rawSpan struct {
+	svcName string
+	info    spanInfo
+}
 
 // httpMethods is the set of standard HTTP methods that produce generic span names.
 var httpMethods = map[string]bool{
@@ -23,6 +35,7 @@ var httpMethods = map[string]bool{
 // signatureStrategy defines how to build the signature set from a trace.
 type signatureStrategy struct {
 	name    string
+	setup   func(rawTraces []rawTrace) // optional: called once before extraction
 	extract func(svcName string, span spanInfo) (string, bool) // returns signature and whether to include it
 }
 
@@ -50,6 +63,28 @@ func extractSpanAttrsV5(attrs []vparquet5.Attribute) map[string]string {
 		}
 	}
 	return m
+}
+
+// buildDrainNormalizer creates a DRAIN instance, trains it on all span names,
+// and returns a function that normalizes span names using the learned patterns.
+func buildDrainNormalizer(rawTraces []rawTrace) func(string) string {
+	d := drain.New("test", drain.DefaultConfig())
+
+	// Train on all span names
+	for _, rt := range rawTraces {
+		for _, sp := range rt.spans {
+			d.Train(sp.info.name)
+		}
+	}
+
+	// Build lookup from original → normalized
+	return func(name string) string {
+		cluster := d.Train(name)
+		if cluster == nil {
+			return name
+		}
+		return cluster.String()
+	}
 }
 
 // strategies to test
@@ -149,35 +184,64 @@ func getStrategies() []signatureStrategy {
 				return sig, true
 			},
 		},
-		{
-			name: "service-only for generic spans + full sig for specific spans",
-			extract: func(svcName string, span spanInfo) (string, bool) {
-				// If span name is a known generic pattern, only use service name
-				if httpMethods[span.name] {
-					if _, hasRoute := span.attrs["http.route"]; !hasRoute {
-						return "", false
+		// --- DRAIN-based strategies ---
+		func() signatureStrategy {
+			var normalize func(string) string
+			return signatureStrategy{
+				name: "DRAIN-normalized span names",
+				setup: func(rawTraces []rawTrace) {
+					normalize = buildDrainNormalizer(rawTraces)
+				},
+				extract: func(svcName string, span spanInfo) (string, bool) {
+					normName := normalize(span.name)
+					parts := make([]string, 0, 4)
+					for _, key := range []string{"http.route",
+						"rpc.service", "rpc.method", "db.system", "db.operation", "db.name",
+						"messaging.system", "messaging.operation", "messaging.destination.name", "messaging.destination"} {
+						if v, ok := span.attrs[key]; ok {
+							parts = append(parts, v)
+						}
 					}
-				}
-				// Also skip very short span names that are likely generic
-				if len(span.name) <= 4 && !strings.Contains(span.name, "/") {
-					return "", false
-				}
-				parts := make([]string, 0, 4)
-				for _, key := range []string{"http.route",
-					"rpc.service", "rpc.method", "db.system", "db.operation", "db.name",
-					"messaging.system", "messaging.operation", "messaging.destination.name", "messaging.destination"} {
-					if v, ok := span.attrs[key]; ok {
-						parts = append(parts, v)
+					sort.Strings(parts)
+					sig := svcName + "|" + normName
+					if len(parts) > 0 {
+						sig += "|" + strings.Join(parts, "|")
 					}
-				}
-				sort.Strings(parts)
-				sig := svcName + "|" + span.name
-				if len(parts) > 0 {
-					sig += "|" + strings.Join(parts, "|")
-				}
-				return sig, true
-			},
-		},
+					return sig, true
+				},
+			}
+		}(),
+		func() signatureStrategy {
+			var normalize func(string) string
+			return signatureStrategy{
+				name: "DRAIN + drop HTTP-method-only + no http.method",
+				setup: func(rawTraces []rawTrace) {
+					normalize = buildDrainNormalizer(rawTraces)
+				},
+				extract: func(svcName string, span spanInfo) (string, bool) {
+					if httpMethods[span.name] {
+						if _, hasRoute := span.attrs["http.route"]; !hasRoute {
+							return "", false
+						}
+					}
+					normName := normalize(span.name)
+					parts := make([]string, 0, 4)
+					for _, key := range []string{"http.route",
+						"rpc.service", "rpc.method", "db.system", "db.operation", "db.name",
+						"messaging.system", "messaging.operation", "messaging.destination.name", "messaging.destination"} {
+						if v, ok := span.attrs[key]; ok {
+							parts = append(parts, v)
+						}
+					}
+					sort.Strings(parts)
+					sig := svcName + "|" + normName
+					if len(parts) > 0 {
+						sig += "|" + strings.Join(parts, "|")
+					}
+					return sig, true
+				},
+			}
+		}(),
 	}
 }
 
@@ -236,16 +300,6 @@ func TestSignatureStrategies(t *testing.T) {
 		schema = pq.SchemaOf(new(vparquet5.Trace))
 	}
 
-	// Read all spans with their attributes
-	type rawTrace struct {
-		rootSvc  string
-		rootSpan string
-		spans    []struct {
-			svcName string
-			info    spanInfo
-		}
-	}
-
 	var rawTraces []rawTrace
 	maxTraces := 50000
 
@@ -272,10 +326,7 @@ func TestSignatureStrategies(t *testing.T) {
 					for _, rs := range tr.ResourceSpans {
 						for _, ss := range rs.ScopeSpans {
 							for _, s := range ss.Spans {
-								rt.spans = append(rt.spans, struct {
-									svcName string
-									info    spanInfo
-								}{
+								rt.spans = append(rt.spans, rawSpan{
 									svcName: rs.Resource.ServiceName,
 									info:    spanInfo{name: s.Name, attrs: extractSpanAttrs(s.Attrs), kind: s.Kind},
 								})
@@ -292,10 +343,7 @@ func TestSignatureStrategies(t *testing.T) {
 					for _, rs := range tr.ResourceSpans {
 						for _, ss := range rs.ScopeSpans {
 							for _, s := range ss.Spans {
-								rt.spans = append(rt.spans, struct {
-									svcName string
-									info    spanInfo
-								}{
+								rt.spans = append(rt.spans, rawSpan{
 									svcName: rs.Resource.ServiceName,
 									info:    spanInfo{name: s.Name, attrs: extractSpanAttrsV5(s.Attrs), kind: s.Kind},
 								})
@@ -324,6 +372,10 @@ func TestSignatureStrategies(t *testing.T) {
 		res := &results[si]
 		res.name = strategy.name
 		res.worstJ = 1.0
+
+		if strategy.setup != nil {
+			strategy.setup(rawTraces)
+		}
 
 		// Build cohorts for this strategy
 		type cohortInfo struct {

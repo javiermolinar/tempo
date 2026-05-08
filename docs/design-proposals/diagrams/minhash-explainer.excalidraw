@@ -28,17 +28,24 @@
     },
 
     {
-      "type": "rectangle", "id": "set_a_box", "x": 40, "y": 125, "width": 140, "height": 180,
+      "type": "ellipse", "id": "venn_a", "x": 30, "y": 125, "width": 220, "height": 200,
       "strokeColor": "#1a1a1a", "backgroundColor": "transparent", "fillStyle": "solid",
-      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "strokeWidth": 1.5, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
       "seed": 20010, "version": 1, "versionNonce": 20011, "isDeleted": false,
-      "groupIds": [], "boundElements": null, "link": null, "locked": false,
-      "roundness": {"type": 3}
+      "groupIds": [], "boundElements": null, "link": null, "locked": false
     },
     {
-      "type": "text", "id": "set_a_title", "x": 50, "y": 132, "width": 120, "height": 16,
-      "text": "Trace A", "originalText": "Trace A",
-      "fontSize": 13, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
+      "type": "ellipse", "id": "venn_b", "x": 130, "y": 125, "width": 220, "height": 200,
+      "strokeColor": "#22c55e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1.5, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
+      "seed": 20020, "version": 1, "versionNonce": 20021, "isDeleted": false,
+      "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "venn_a_label", "x": 48, "y": 175, "width": 85, "height": 70,
+      "text": "Trace A\nonly\n\ndb|INSERT",
+      "originalText": "Trace A\nonly\n\ndb|INSERT",
+      "fontSize": 11, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
       "strokeColor": "#1a1a1a", "backgroundColor": "transparent", "fillStyle": "solid",
       "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
       "seed": 20012, "version": 1, "versionNonce": 20013, "isDeleted": false,
@@ -46,55 +53,24 @@
       "containerId": null, "lineHeight": 1.25
     },
     {
-      "type": "text", "id": "set_a_sigs", "x": 52, "y": 158, "width": 120, "height": 130,
-      "text": "checkout|POST\npayment|charge\ninventory|check\nshipping|estimate\ndb|INSERT",
-      "originalText": "checkout|POST\npayment|charge\ninventory|check\nshipping|estimate\ndb|INSERT",
-      "fontSize": 11, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "type": "text", "id": "venn_shared", "x": 155, "y": 165, "width": 70, "height": 95,
+      "text": "shared\n\ncheckout\npayment\ninventory\nshipping",
+      "originalText": "shared\n\ncheckout\npayment\ninventory\nshipping",
+      "fontSize": 11, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
       "strokeColor": "#1a1a1a", "backgroundColor": "transparent", "fillStyle": "solid",
       "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
       "seed": 20014, "version": 1, "versionNonce": 20015, "isDeleted": false,
       "groupIds": [], "boundElements": null, "link": null, "locked": false,
       "containerId": null, "lineHeight": 1.25
     },
-
     {
-      "type": "rectangle", "id": "set_b_box", "x": 200, "y": 125, "width": 140, "height": 180,
-      "strokeColor": "#22c55e", "backgroundColor": "transparent", "fillStyle": "solid",
-      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
-      "seed": 20020, "version": 1, "versionNonce": 20021, "isDeleted": false,
-      "groupIds": [], "boundElements": null, "link": null, "locked": false,
-      "roundness": {"type": 3}
-    },
-    {
-      "type": "text", "id": "set_b_title", "x": 210, "y": 132, "width": 120, "height": 16,
-      "text": "Trace B", "originalText": "Trace B",
-      "fontSize": 13, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
+      "type": "text", "id": "venn_b_label", "x": 250, "y": 175, "width": 85, "height": 70,
+      "text": "Trace B\nonly\n\ncache-gw\ncache-warm",
+      "originalText": "Trace B\nonly\n\ncache-gw\ncache-warm",
+      "fontSize": 11, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
       "strokeColor": "#22c55e", "backgroundColor": "transparent", "fillStyle": "solid",
       "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
       "seed": 20022, "version": 1, "versionNonce": 20023, "isDeleted": false,
-      "groupIds": [], "boundElements": null, "link": null, "locked": false,
-      "containerId": null, "lineHeight": 1.25
-    },
-    {
-      "type": "text", "id": "set_b_sigs", "x": 212, "y": 158, "width": 120, "height": 150,
-      "text": "checkout|POST    ←\npayment|charge   ←\ninventory|check  ←\nshipping|estimate←\ncache-gw|GET\ncache-warm|async",
-      "originalText": "checkout|POST    ←\npayment|charge   ←\ninventory|check  ←\nshipping|estimate←\ncache-gw|GET\ncache-warm|async",
-      "fontSize": 11, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
-      "strokeColor": "#22c55e", "backgroundColor": "transparent", "fillStyle": "solid",
-      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
-      "seed": 20024, "version": 1, "versionNonce": 20025, "isDeleted": false,
-      "groupIds": [], "boundElements": null, "link": null, "locked": false,
-      "containerId": null, "lineHeight": 1.25
-    },
-
-    {
-      "type": "text", "id": "shared_label", "x": 55, "y": 278, "width": 270, "height": 14,
-      "text": "← 4 shared                    2 new →",
-      "originalText": "← 4 shared                    2 new →",
-      "fontSize": 10, "fontFamily": 3, "textAlign": "center", "verticalAlign": "top",
-      "strokeColor": "#737373", "backgroundColor": "transparent", "fillStyle": "solid",
-      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100, "angle": 0,
-      "seed": 20030, "version": 1, "versionNonce": 20031, "isDeleted": false,
       "groupIds": [], "boundElements": null, "link": null, "locked": false,
       "containerId": null, "lineHeight": 1.25
     },

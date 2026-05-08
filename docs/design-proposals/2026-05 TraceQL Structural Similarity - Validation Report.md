@@ -480,6 +480,34 @@ For the baseline use case — "find a healthy trace from hours/days ago" — the
 
 **Reproduce:** `go test ./pkg/minhash/ -run TestCompactionImpact -v`
 
+## Recommended instrumentation: trace fragmentation metrics
+
+The compaction hypothesis ("higher compaction = better MinHash") cannot be validated from static blocks because we can't observe the same trace pre- and post-compaction. A runtime metric would provide this data.
+
+**Proposed metric:** emit trace fragmentation statistics during trace-by-ID lookups.
+
+During a trace-by-ID request, the frontend shards the lookup across queriers and ingesters. Each querier calls `tempodb.Find()` against its blocks and returns partial traces. The frontend's `TraceByIDCombiner` merges them. Today, `TraceByIDMetrics` only carries `inspectedBytes`. Extending it would give fragmentation visibility:
+
+```proto
+message TraceByIDMetrics {
+    uint64 inspectedBytes = 1;
+    uint32 blocksWithTrace = 2;           // blocks that contained fragments
+    repeated uint32 compactionLevels = 3; // compaction levels of those blocks
+}
+```
+
+The `TraceByIDMetricsCombiner` at the frontend sums `blocksWithTrace` and unions `compactionLevels` across all querier and ingester responses. Then emits:
+
+- `tempo_trace_by_id_fragments_total` — histogram of how many blocks contained fragments per lookup.
+- `tempo_trace_by_id_fragment_compaction_level` — histogram of compaction levels of blocks that contained fragments.
+
+This would answer:
+- **How fragmented are traces in practice?** If p50 fragments = 1, most traces are in one block and MinHash is accurate at first flush. If p50 = 3, compaction is critical.
+- **At what compaction level do traces consolidate?** If most fragments are at level 1 and single fragments are at level 3+, compaction is doing its job.
+- **Does fragmentation vary by tenant/workload?** Short-lived traces (API calls) vs long-running traces (batch jobs) likely have different fragmentation profiles.
+
+This is independent of the `similar_to()` feature — it's generally useful for understanding Tempo's trace assembly behavior and would validate the MinHash compaction assumptions with production data.
+
 ## Limitations and open questions
 
 ### Single-span traces

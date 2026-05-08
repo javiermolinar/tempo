@@ -366,6 +366,65 @@ For a block with 100k traces at 15 signatures each: 100k × 2 µs = **0.2 second
 
 **Reproduce:** `go test ./pkg/minhash/ -bench=. -benchmem`
 
+## Bad matches: real-world false positives
+
+Exhaustive pairwise comparison of all 303 unique shapes in Tenant B's largest block (50,000 traces, 45,753 cohort pairs) found **223 band matches (0.49%)**.
+
+Of those, **14 had Jaccard < 0.1** — traces that `similar_to()` would pass but share almost no structure.
+
+### The root cause: generic HTTP span names
+
+Every worst match shares the same signature: `subscriber-web|GET|GET`. This is a span where:
+- `service.name` = `subscriber-web`
+- `span.name` = `GET` (the HTTP method, not the endpoint)
+- `http.method` = `GET`
+- `http.route` = absent
+
+Without `http.route`, the signature cannot distinguish between different API endpoints. Every GET request to `subscriber-web` produces the same signature regardless of whether it hits `/api/v1/configuration`, `/mobile/v1/internal-port`, or `/api/v1/pools/transfer`.
+
+### Worst matches
+
+| Jaccard | Trace A | Trace B | Shared signatures |
+|---------|---------|---------|-------------------|
+| 0.059 | GET /api/v1/configuration (11 sigs) | GET /mobile/v1/app-config (7 sigs) | `subscriber-web\|GET\|GET` |
+| 0.059 | GET /mobile/v1/internal-port (5 sigs) | InternalPortCleanupCron (13 sigs) | `usmobile-gateway\|find internal_ports` |
+| 0.060 | POST /api/v1/oauth/login (32 sigs) | GET /api/v1/freetrial/eligibility (21 sigs) | `subscriber-web\|GET\|GET` + 2 shared DB ops |
+| 0.071 | GET /api/v1/configuration (11 sigs) | GET (4 sigs) | `subscriber-web\|GET\|GET` |
+| 0.071 | GET /api/v1/pools/transfer (4 sigs) | GET /api/v1/configuration (11 sigs) | `subscriber-web\|GET\|GET` |
+
+These are **completely different API flows** that collide because one generic span signature (`GET|GET`) appears in both. A user querying `similar_to()` for a `/api/v1/configuration` trace would also get `/api/v1/pools/transfer` traces — that's garbage.
+
+### Jaccard distribution of all band matches
+
+```
+[0.0-0.1)  14  ██████████████
+[0.1-0.2)  45  █████████████████████████████████████████████
+[0.2-0.3)  54  ██████████████████████████████████████████████████████
+[0.3-0.4)  24  ████████████████████████
+[0.4-0.5)   9  █████████
+[0.5-0.6)  18  ██████████████████████████
+[0.6-0.7)  26  ██████████████████████████
+[0.7-0.8)   9  █████████
+[0.8-0.9)  13  █████████████
+[0.9-1.0)  11  ███████████
+```
+
+113 of 223 band matches (51%) have Jaccard < 0.4. These are the false positives that the other predicates in the query (`service.name`, `name`, `status`) must eliminate.
+
+### Mitigation: signature composition improvements
+
+The problem is not MinHash — it correctly identifies that these traces share a signature. The problem is that `subscriber-web|GET|GET` is a **meaningless signature** that appears in many unrelated traces.
+
+Potential mitigations (not yet implemented):
+
+1. **Drop HTTP-method-only signatures.** If `span.name` matches a known HTTP method (`GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS`) and no `http.route` is present, exclude the span from the signature set. It adds collision risk without structural signal.
+2. **Require minimum signature diversity.** If a trace's signature set after deduplication has only 1 element, skip MinHash entirely — a single-element set offers no fuzzy matching value over an exact hash.
+3. **Normalize client/server span pairs.** Many traces have both a client span (`subscriber-web|GET|GET`) and a server span (`subscriber-web|GET /api/v1/configuration|/api/v1/configuration|GET`). The client span is redundant and should be suppressed when a more specific server span from the same service exists.
+
+These are signature composition changes in the block builder, not MinHash parameter changes. The `pkg/minhash/` package remains unchanged.
+
+**Reproduce:** `TEMPO_BLOCK_PATH=/path/to/block go test ./pkg/minhash/ -run TestBadMatches -v`
+
 ## Limitations and open questions
 
 ### Single-span traces

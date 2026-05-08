@@ -65,6 +65,32 @@ func extractSpanAttrsV5(attrs []vparquet5.Attribute) map[string]string {
 	return m
 }
 
+// normalizeSpanNameStateless uses DRAIN's tokenizer + data heuristic to replace
+// high-cardinality tokens (UUIDs, hex, numbers) with <_>.
+// This is deterministic and stateless — no training, same result on any machine.
+func normalizeSpanNameStateless(name string) string {
+	var tokenizer drain.DefaultTokenizerWrapper
+	var tokens []string
+	tokens = tokenizer.Tokenize(name, tokens)
+	if len(tokens) == 0 {
+		return name
+	}
+	changed := false
+	for i, t := range tokens {
+		if t == "<END>" {
+			continue
+		}
+		if drain.IsLikelyData(t) {
+			tokens[i] = "<_>"
+			changed = true
+		}
+	}
+	if !changed {
+		return name
+	}
+	return tokenizer.Join(tokens)
+}
+
 // buildDrainNormalizer creates a DRAIN instance, trains it on all span names,
 // and returns a function that normalizes span names using the learned patterns.
 func buildDrainNormalizer(rawTraces []rawTrace) func(string) string {
@@ -184,7 +210,27 @@ func getStrategies() []signatureStrategy {
 				return sig, true
 			},
 		},
-		// --- DRAIN-based strategies ---
+		// --- Normalization-based strategies ---
+		{
+			name: "stateless heuristic normalization (no DRAIN training)",
+			extract: func(svcName string, span spanInfo) (string, bool) {
+				normName := normalizeSpanNameStateless(span.name)
+				parts := make([]string, 0, 4)
+				for _, key := range []string{"http.route",
+					"rpc.service", "rpc.method", "db.system", "db.operation", "db.name",
+					"messaging.system", "messaging.operation", "messaging.destination.name", "messaging.destination"} {
+					if v, ok := span.attrs[key]; ok {
+						parts = append(parts, v)
+					}
+				}
+				sort.Strings(parts)
+				sig := svcName + "|" + normName
+				if len(parts) > 0 {
+					sig += "|" + strings.Join(parts, "|")
+				}
+				return sig, true
+			},
+		},
 		func() signatureStrategy {
 			var normalize func(string) string
 			return signatureStrategy{
